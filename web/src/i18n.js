@@ -127,6 +127,7 @@ const STRINGS = {
     versionLabel: "버전",
     privacy: "개인정보처리방침",
     sourceCode: "소스 코드",
+    sponsor: "커피 한 잔 후원하기",
     version: (v) => v,
     // messages
     synced: "동기화됨",
@@ -286,6 +287,7 @@ const STRINGS = {
     versionLabel: "Version",
     privacy: "Privacy policy",
     sourceCode: "Source code",
+    sponsor: "Buy me a coffee",
     version: (v) => v,
     synced: "Synced",
     notPdf: (name) => `${name} is not a PDF file.`,
