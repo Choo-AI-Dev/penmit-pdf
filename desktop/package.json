@@ -1,7 +1,7 @@
 {
   "name": "penmit-pdf",
   "productName": "Penmit PDF",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Read and handwrite on PDFs, synced through your own Google Drive or GitHub.",
   "homepage": "https://github.com/Choo-AI-Dev/penmit-pdf",
   "author": {

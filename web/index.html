@@ -157,6 +157,11 @@
         <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4c4.4 0 8 2.3 8 5.2s-3.6 5.3-8 5.3-8-2.4-8-5.3S7.6 4 12 4z" stroke-dasharray="2.6 2.4"/><path d="M7.6 13.6c-.9 2 .1 4 2.3 4.6"/><circle cx="10.6" cy="19.2" r="1.3"/></svg>
       </button>
     </div>
+    <div class="tb-insert">
+      <button class="tb-btn" id="add-picture" type="button" aria-haspopup="menu" aria-expanded="false" data-i18n-label="addPicture" data-i18n-title="addPicture">
+        <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2.2"/><circle cx="9" cy="10" r="1.6"/><path d="M4 17.5l4.8-4.3 3.4 3 2.8-2.4 5 4"/></svg>
+      </button>
+    </div>
     <div class="palette" id="palette">
       <div class="swatches" id="swatches" role="radiogroup" data-i18n-label="color"></div>
       <div class="widths" id="widths" role="radiogroup" data-i18n-label="thickness"></div>
@@ -284,6 +289,23 @@
   </form>
 </dialog>
 
+<!-- Paper for a blank page -->
+<dialog id="paper" class="alert paper-dialog">
+  <form method="dialog" id="paper-form">
+    <h2 id="paper-title"></h2>
+    <p class="alert-sub" id="paper-sub"></p>
+    <div class="paper-grid" role="group" data-i18n-label="paperChoice">
+      <button class="paper-opt" type="submit" value="plain"><span class="paper-prev" data-kind="plain"></span><span data-i18n="paperPlain"></span></button>
+      <button class="paper-opt" type="submit" value="lined"><span class="paper-prev" data-kind="lined"></span><span data-i18n="paperLined"></span></button>
+      <button class="paper-opt" type="submit" value="grid"><span class="paper-prev" data-kind="grid"></span><span data-i18n="paperGrid"></span></button>
+      <button class="paper-opt" type="submit" value="dots"><span class="paper-prev" data-kind="dots"></span><span data-i18n="paperDots"></span></button>
+    </div>
+    <div class="alert-actions one">
+      <button class="alert-btn" value="cancel" type="submit" data-i18n="cancel"></button>
+    </div>
+  </form>
+</dialog>
+
 <!-- Go to page -->
 <dialog id="goto" class="alert">
   <form method="dialog" id="goto-form">
@@ -298,6 +320,7 @@
 </dialog>
 
 <input type="file" id="file-input" accept="application/pdf,.pdf" multiple hidden>
+<input type="file" id="picture-input" accept="image/*" multiple hidden>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script type="module" src="src/main.js"></script>

@@ -175,6 +175,20 @@ READ = """async () => {
   };
 }"""
 
+READ_PICTURES = """async () => {
+  const db = await new Promise((res) => { const r = indexedDB.open('penmit'); r.onsuccess = () => res(r.result); });
+  const all = await new Promise((res) => { const q = db.transaction('images').objectStore('images').getAll(); q.onsuccess = () => res(q.result); });
+  db.close();
+  return all.map(f => f.src);
+}"""
+PASTE_PICTURE = """async () => {
+  const c = document.createElement('canvas'); c.width = 400; c.height = 300;
+  const x = c.getContext('2d'); x.fillStyle = '#e02020'; x.fillRect(0, 0, 400, 150); x.fillStyle = '#2040e0'; x.fillRect(0, 150, 400, 150);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  const dt = new DataTransfer(); dt.items.add(new File([blob], 'pic.png', { type: 'image/png' }));
+  document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+}"""
+
 fails = []
 def check(cond, msg):
     print(("PASS " if cond else "FAIL ") + msg)
@@ -335,6 +349,25 @@ with sync_playwright() as p:
     check(len(a_ink) == 2 and set(s1) <= set(a_ink), f"A merged B's stroke: {len(a_ink)} strokes")
     check(len([f for f in drive.files.values() if f["name"] == "Penmit PDF"]) == 1, "only one 'Penmit PDF' folder")
 
+    # A picture pasted on B goes to Drive as its own file, A gets it, and deleting it bins the file.
+    open_doc(B, "test")
+    B.evaluate(PASTE_PICTURE)
+    B.wait_for_timeout(1000)
+    do_sync(B)
+    pics = {n: d for n, d in drive.tree()[doc_id].items() if n.startswith("img-")}
+    meta = [f for f in drive.files.values() if f["name"].startswith("img-") and not drive.trashed(f)]
+    name, data = next(iter(pics.items())) if pics else ("", b"")
+    check(len(pics) == 1 and name == f"img-{hashlib.sha256(data).hexdigest()}.png" and meta[0]["mimeType"] == "image/png",
+          f"a pasted picture is uploaded as img-<its SHA-256>.png {list(pics)}")
+    do_sync(A)
+    check(A.evaluate(READ_PICTURES) == [name[4:68]], "A downloaded the picture")
+    B.keyboard.press("Delete")  # the pasted picture is still selected
+    B.wait_for_timeout(500)
+    do_sync(B)
+    check(not any(n.startswith("img-") for n in drive.tree()[doc_id]) and any(f.get("trashed") for f in drive.files.values() if f["name"] == name),
+          "deleting it puts its file in Drive's bin")
+    back(B)
+
     # A large PDF goes through a resumable upload and arrives intact on B.
     A.set_input_files("#file-input", S + "big.pdf")
     A.wait_for_selector("#reader:not([hidden])")
@@ -354,7 +387,7 @@ with sync_playwright() as p:
     A.locator(".menu [data-action=delete]").click()
     A.wait_for_timeout(500)
     do_sync(A)
-    trashed = [f for f in drive.files.values() if f.get("trashed")]
+    trashed = [f for f in drive.files.values() if f.get("trashed") and f["mimeType"] == FOLDER]
     check(doc_id not in drive.tree() and len(trashed) == 1 and trashed[0]["name"] == doc_id, "the deleted PDF's folder went to Drive's bin")
     do_sync(B)
     check(B.locator(".doc").count() == 1 and len(B.evaluate(READ)["docs"]) == 1, "B removed the PDF deleted on A")

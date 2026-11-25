@@ -177,6 +177,7 @@ with sync_playwright() as p:
     settle()
     page.locator("#thumbs .thumb").nth(0).locator(".thumb-more").click()
     page.locator(".menu [data-action=add-blank]").click()
+    page.locator("#paper .paper-opt[value=plain]").click()
     settle(900)
     check(page.locator(".page").count() == 7 and page.locator(".page").nth(1).get_attribute("class").find("blank-page") >= 0, "a blank page was added after page 1")
     check(page.locator("#page-ind").inner_text().strip() == "2 / 7", f"and it is shown ({page.locator('#page-ind').inner_text()})")
@@ -189,6 +190,7 @@ with sync_playwright() as p:
     on_blank = [s for s in data["strokes"] if s["page"] == f"b:{blank_ids[0]}"] if blank_ids else []
     check(len(blank_ids) == 1 and len(on_blank) == 1, "writing on the blank page is kept with it")
     page.locator("#add-blank").click()
+    page.locator("#paper .paper-opt[value=plain]").click()
     settle(900)
     check(page.locator(".page").count() == 8 and page.locator("#page-ind").inner_text().strip() == "3 / 8", "'Add blank page' puts one after the current page")
 

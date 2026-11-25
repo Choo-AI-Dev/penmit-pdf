@@ -17,7 +17,7 @@ Read and handwrite on PDFs on any device, and keep them in **your own Google Dri
 ### 핵심 기능
 
 1. **PDF 보기:** 한쪽 보기, 두쪽 보기, 표지 따로 두쪽 보기. 확대·축소와 두 손가락 핀치를 지원해요.
-2. **필기:** 펜, 형광펜, 지우개를 쓸 수 있어요. 애플펜슬, 갤럭시 S펜, 서피스펜, 와콤처럼 브라우저가 인식하는 펜이면 필압까지 받아요. 펜으로 쓰는 동안 손바닥 터치는 무시해요.
+2. **필기:** 펜, 형광펜, 지우개를 쓸 수 있어요. 애플펜슬, 갤럭시 S펜, 서피스펜, 와콤처럼 브라우저가 인식하는 펜이면 필압까지 받아요. 펜으로 쓰는 동안 손바닥 터치는 무시해요. 무지·줄·모눈·점 노트 빈 쪽을 넣고, 사진을 붙여 넣어 그 위에 쓸 수도 있어요.
 3. **동기화:** 내 구글 드라이브나 GitHub 비공개 저장소에 PDF와 필기를 올리고, 다른 기기에서 받아요. 두 기기에서 따로 쓴 필기도 자동으로 합쳐요.
 
 내보내기를 하면 필기가 **PDF 표준 잉크 주석**으로 들어간 PDF가 만들어져요. 아크로뱃, 맥 미리보기, 브라우저 같은 다른 PDF 프로그램에서도 그대로 보여요.
@@ -73,6 +73,7 @@ Read and handwrite on PDFs on any device, and keep them in **your own Google Dri
 <PDF의 SHA-256>/document.pdf   원본 PDF (한 번만 올림)
 <PDF의 SHA-256>/meta.json      파일 이름, 쪽수
 <PDF의 SHA-256>/ink.json       필기 (작은 텍스트 파일)
+<PDF의 SHA-256>/img-<사진의 SHA-256>.png/.jpg   쪽에 넣은 사진 (사진마다 한 번만 올림)
 ```
 
 필기는 원본 PDF와 따로 저장해서, 필기할 때마다 큰 PDF를 다시 올리지 않아요. 문서를 닫을 때 바뀐 게 있으면 자동으로 동기화해요.
@@ -84,9 +85,10 @@ Read and handwrite on PDFs on any device, and keep them in **your own Google Dri
 - **전체 화면:** 오른쪽 위 네모 모서리 버튼(또는 F 키)을 누르면 위아래 막대가 사라지고, 한 화면에 한 장(두 쪽 보기면 두 쪽)이 꽉 차게 보여요. 손가락으로 옆으로 밀거나 화면 양쪽 끝을 톡 치면 넘어가고(키보드는 ←/→), 펜으로는 그대로 필기돼요.
 - **쪽 이동:** 아래 가운데 쪽 번호(예: 3 / 12)를 누르고 쪽 번호를 넣으면 바로 가요. 아이패드는 애플펜슬로 숫자를 손글씨로 써도 돼요.
 - **지우개:** 지우개를 고르면 **획 전체**(닿은 획을 통째로)와 **부분**(지나간 자리만) 중에 고를 수 있고, 크기도 세 가지예요.
-- **올가미:** 올가미 도구로 필기를 둘러싸면 골라져요. 상자 안을 끌면 옮기고, 모서리를 끌면 크기가 바뀌고, 위에 뜬 버튼으로 색 바꾸기·복제·삭제를 해요. 손가락으로도 옮길 수 있어요.
+- **올가미:** 올가미 도구로 필기나 사진을 둘러싸면 골라져요(사진은 톡 쳐도 골라져요). 상자 안을 끌면 옮기고, 모서리를 끌면 크기가 바뀌고, 위에 뜬 버튼으로 색 바꾸기·복제·삭제를 해요. 손가락으로도 옮길 수 있어요.
 - **쪽 목록·목차:** 오른쪽 위 네 칸 버튼을 누르면 쪽 미리보기가 나와요. **목차** 탭에서는 PDF에 들어 있는 목차로 바로 가요.
-- **빈 쪽 넣기:** 쪽 목록 아래 **빈 쪽 넣기**를 누르면 지금 보는 쪽 뒤에 같은 크기의 빈 쪽이 생겨요. 미리보기의 ⋯ 메뉴로 원하는 쪽 뒤에 넣거나 빈 쪽을 지울 수 있어요. 필기 포함 PDF로 저장하면 빈 쪽도 같이 들어가요.
+- **빈 쪽 넣기:** 쪽 목록 아래 **빈 쪽 넣기**를 누르고 종이(**무지 노트, 줄 노트, 모눈 노트, 점 노트**)를 고르면 지금 보는 쪽 뒤에 같은 크기의 빈 쪽이 생겨요. 마지막에 고른 종이가 다음에 먼저 골라져 있어요. 미리보기의 ⋯ 메뉴로 원하는 쪽 뒤에 넣거나, 빈 쪽의 **종이 바꾸기**, 빈 쪽 지우기를 할 수 있어요. 필기 포함 PDF로 저장하면 빈 쪽도 줄·모눈·점까지 같이 들어가요.
+- **사진 넣기:** 복사한 사진을 Ctrl+V(⌘V)로 붙여 넣거나, 도구막대의 사진 버튼에서 **복사한 사진 붙여넣기** 또는 **사진 고르기**(아이패드·폰은 사진 보관함·카메라·파일)를 누르세요. 사진 파일을 쪽 위에 끌어다 놓아도 돼요. 넣은 사진은 골라진 채로 나와서 바로 끌어서 옮기고 모서리로 크기를 바꿀 수 있어요. 펜을 고르면 사진 위에 필기할 수 있고, 지우개는 사진을 지우지 않아요(올가미로 골라서 삭제). 큰 사진은 긴 변 2400px로 줄이고 위치 정보 같은 메타데이터는 빼고 저장해요. 필기 포함 PDF로 저장하면 사진은 이미지 스탬프 주석으로 들어가요.
 - **자동 동기화:** 저장 위치를 골라 두면 필기를 멈추고 잠시 뒤, 앱을 열 때, 앱을 닫을 때 저절로 동기화돼요(설정에서 끌 수 있어요). 동기화가 안 되면 문서 목록 제목 아래 줄과 동기화 버튼에 빨간 표시가 떠요.
 - **문서 관리:** 문서 이름 옆 ⌄ 버튼(또는 오른쪽 클릭)으로 이름 바꾸기, 필기 포함 PDF 저장, 삭제를 할 수 있어요.
 - **단축키:** P 펜, H 형광펜, E 지우개, L 올가미, V 손, F 전체 화면, Delete 고른 필기 지우기, Ctrl+Z 실행 취소, Ctrl+Shift+Z 또는 Ctrl+Y 다시 실행
@@ -98,12 +100,13 @@ Read and handwrite on PDFs on any device, and keep them in **your own Google Dri
 - GitHub 토큰은 저장소 하나, Contents 권한 하나만 주세요. 유출되더라도 그 저장소 밖으로는 영향이 없어요.
 - 자세한 내용: [개인정보처리방침](https://choo-ai-dev.github.io/penmit-pdf/privacy.html)
 
-### 베타 안내 (0.5.0)
+### 베타 안내 (0.6.0)
 
 - 안드로이드 앱에서는 아직 구글 드라이브를 쓸 수 없어요.
 - 암호가 걸린 PDF는 아직 열 수 없어요.
 - 내보낸 PDF를 다시 열면 필기가 보이기는 하지만, 지우거나 고칠 수는 없어요.
-- 글자 입력, 도형, 페이지 추가는 아직 없어요.
+- 글자 입력, 도형은 아직 없어요.
+- 사진은 0.6.0부터 넣을 수 있어요. 0.5.x 앱이 동기화하면 그 기기에서는 사진이 안 보이지만, 사진은 지워지지 않아요(0.6.0 기기가 다시 채워요).
 
 ---
 
@@ -116,10 +119,10 @@ Handwriting apps keep your notes inside their own cloud. Penmit PDF has **no ser
 ### Features
 
 1. **Read PDFs:** single page, two pages, or cover plus two pages; zoom and two-finger pinch; full screen; page thumbnails and the PDF's table of contents; go to a page by number.
-2. **Handwrite:** pen, highlighter, eraser (whole strokes or just the part you rub out) and lasso (move, resize, recolour, duplicate, delete), with pressure from Apple Pencil, Galaxy S Pen, Surface Pen, Wacom and any other pen the browser sees. Palm touches are ignored while the pen writes. Insert blank pages anywhere for extra room.
+2. **Handwrite:** pen, highlighter, eraser (whole strokes or just the part you rub out) and lasso (move, resize, recolour, duplicate, delete), with pressure from Apple Pencil, Galaxy S Pen, Surface Pen, Wacom and any other pen the browser sees. Palm touches are ignored while the pen writes. Insert blank pages (plain, lined, grid or dots) anywhere for extra room, and paste, choose or drop pictures onto any page to write over them.
 3. **Sync:** PDFs and notes go to your Google Drive or a private GitHub repository and come back on your other devices, automatically a little after you stop writing. Notes written on two devices at once are merged.
 
-**Export** writes the notes into a copy of the PDF as standard ink annotations, which Acrobat, Preview, browsers and other PDF readers show as drawn.
+**Export** writes the notes into a copy of the PDF as standard ink annotations, which Acrobat, Preview, browsers and other PDF readers show as drawn. Pictures become image stamp annotations, and blank pages keep their lines, grid or dots.
 
 ### Install
 
@@ -145,7 +148,7 @@ Pick one in **Settings (gear) → Sync**, and pick the same one on each device.
   4. Press **Sync**. Use the same repository and token on your other devices.
 - **This device only**: no sync.
 
-Each PDF is stored as `<sha256>/document.pdf` (uploaded once), `meta.json` and `ink.json` (the notes, as small text), under `Penmit PDF/` in Drive or `penmit/` in the repository. Closing a document syncs it if anything changed.
+Each PDF is stored as `<sha256>/document.pdf` (uploaded once), `meta.json`, `ink.json` (the notes, as small text) and one `img-<sha256>.png`/`.jpg` per picture placed on its pages (each uploaded once), under `Penmit PDF/` in Drive or `penmit/` in the repository. Closing a document syncs it if anything changed.
 
 ### Privacy
 

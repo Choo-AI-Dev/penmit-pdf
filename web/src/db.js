@@ -1,9 +1,10 @@
 // Local storage in IndexedDB.
-//   docs:  { id, name, size, pageCount, addedAt, updatedAt, openedAt, thumb, view, synced, deleted }
-//   files: { id, bytes }            original PDF bytes, kept apart so listing docs stays light
-//   ink:   { id, strokes, deleted } handwriting, see ink.js
+//   docs:   { id, name, size, pageCount, addedAt, updatedAt, openedAt, thumb, view, synced, deleted }
+//   files:  { id, bytes }            original PDF bytes, kept apart so listing docs stays light
+//   ink:    { id, strokes, images, deleted, pages } handwriting, see ink.js
+//   images: { id: "<docId>/<src>", doc, src, mime, bytes }  the pictures placed on a document's pages
 const DB_NAME = "penmit";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 function openDb() {
@@ -12,11 +13,15 @@ function openDb() {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
-        for (const name of ["docs", "files", "ink"]) {
+        for (const name of ["docs", "files", "ink", "images"]) {
           if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: "id" });
         }
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        // Let a newer version of the app (in another tab) upgrade the database.
+        req.result.onversionchange = () => { req.result.close(); dbPromise = null; };
+        resolve(req.result);
+      };
       req.onerror = () => reject(req.error);
     });
   }
@@ -34,13 +39,19 @@ async function run(store, mode, fn) {
   });
 }
 
+// A document's pictures have keys "<docId>/<src>".
+const pictureRange = (docId) => IDBKeyRange.bound(`${docId}/`, `${docId}/\uffff`);
+
 export const db = {
   get: (store, id) => run(store, "readonly", (s) => s.get(id)),
+  has: async (store, id) => (await run(store, "readonly", (s) => s.getKey(id))) !== undefined,
   getAll: (store) => run(store, "readonly", (s) => s.getAll()),
   put: (store, value) => run(store, "readwrite", (s) => s.put(value)),
   del: (store, id) => run(store, "readwrite", (s) => s.delete(id)),
+  pictureKeys: (docId) => run("images", "readonly", (s) => s.getAllKeys(pictureRange(docId))),
   async removeDoc(id) {
     await Promise.all(["docs", "files", "ink"].map((s) => db.del(s, id)));
+    await run("images", "readwrite", (s) => s.delete(pictureRange(id)));
   },
 };
 

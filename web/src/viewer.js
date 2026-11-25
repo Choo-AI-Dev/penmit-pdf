@@ -1,5 +1,6 @@
 // PDF rendering and page layout (single, two pages, cover + two pages), zoom and pinch.
 import * as pdfjs from "../vendor/pdfjs/pdf.min.mjs";
+import { drawPaper, paperOf } from "./paper.js";
 
 const VENDOR = new URL("../vendor/pdfjs/", import.meta.url).href;
 pdfjs.GlobalWorkerOptions.workerSrc = VENDOR + "pdf.worker.min.mjs";
@@ -49,6 +50,7 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 // A blank page's geometry, shaped like the parts of pdf.js's PageViewport the app uses.
 function blankViewport(w, h, scale) {
   return {
+    rotation: 0,
     width: w * scale,
     height: h * scale,
     transform: [scale, 0, 0, -scale, 0, h * scale],
@@ -64,6 +66,11 @@ function pageElement(index, label) {
   const pdfCanvas = document.createElement("canvas");
   pdfCanvas.className = "pdf";
   pdfCanvas.width = pdfCanvas.height = 0;
+  // Pictures sit between the page and the handwriting: they cover the page, and ink (blended
+  // with multiply) shows on top of them.
+  const imgCanvas = document.createElement("canvas");
+  imgCanvas.className = "img";
+  imgCanvas.width = imgCanvas.height = 0;
   const inkCanvas = document.createElement("canvas");
   inkCanvas.className = "ink";
   const liveCanvas = document.createElement("canvas");
@@ -71,8 +78,8 @@ function pageElement(index, label) {
   const num = document.createElement("span");
   num.className = "page-num";
   num.textContent = label;
-  el.append(pdfCanvas, inkCanvas, liveCanvas, num);
-  return { el, pdfCanvas, inkCanvas, liveCanvas };
+  el.append(pdfCanvas, imgCanvas, inkCanvas, liveCanvas, num);
+  return { el, pdfCanvas, imgCanvas, inkCanvas, liveCanvas };
 }
 
 export class Viewer extends EventTarget {
@@ -180,6 +187,8 @@ export class Viewer extends EventTarget {
         p.el.__page = p;
         this.blankCache.set(b.id, p);
       }
+      const paper = paperOf(b);
+      if (p.paper !== paper) { p.paper = paper; p.renderedScale = 0; p.el.dataset.paper = paper; }
       return p;
     };
     const order = [];
@@ -416,7 +425,7 @@ export class Viewer extends EventTarget {
     p.task?.cancel();
     const out = this.#outputScale(p);
     const target = this.scale * out;
-    if (p.blank) { p.renderedScale = target; return; } // white paper, nothing to draw
+    if (p.blank) { this.#renderBlank(p, target); return; }
     const viewport = p.proxy.getViewport({ scale: target });
     const canvas = document.createElement("canvas");
     canvas.className = "pdf";
@@ -438,12 +447,35 @@ export class Viewer extends EventTarget {
       if (p.task === task) p.task = null;
     }
     if (Math.abs(target - this.scale * this.#outputScale(p)) > 1e-3) { this.scheduleRender(); }
+    this.#swapCanvas(p, canvas, target);
+  }
+
+  #swapCanvas(p, canvas, target) {
     p.el.replaceChild(canvas, p.pdfCanvas);
     p.pdfCanvas = canvas;
     p.renderedScale = target;
     this.renderedOrder = this.renderedOrder.filter((q) => q !== p);
     this.renderedOrder.push(p);
     this.#evict();
+  }
+
+  // A blank page: white (the page's own background) plus its lines, grid or dots.
+  #renderBlank(p, target) {
+    if (p.paper === "plain") {
+      p.pdfCanvas.width = p.pdfCanvas.height = 0;
+      p.renderedScale = target;
+      return;
+    }
+    const canvas = document.createElement("canvas");
+    canvas.className = "pdf";
+    canvas.width = Math.max(1, Math.floor(p.w * target));
+    canvas.height = Math.max(1, Math.floor(p.h * target));
+    const ctx = canvas.getContext("2d", { alpha: false });
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.setTransform(canvas.width / p.w, 0, 0, -canvas.height / p.h, 0, canvas.height);
+    drawPaper(ctx, p.paper, p.w, p.h, target);
+    this.#swapCanvas(p, canvas, target);
   }
 
   #evict() {

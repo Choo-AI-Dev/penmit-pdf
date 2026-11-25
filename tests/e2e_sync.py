@@ -127,6 +127,19 @@ READ_INK = """async () => {
   return { docs: docs.map(d => ({ name: d.name, deleted: !!d.deleted, synced: !!d.synced })), ink: ink.map(i => ({ strokes: Object.keys(i.strokes).sort(), deleted: Object.keys(i.deleted).sort() })) };
 }"""
 
+# Paste a 400 x 300 picture, red on top and blue below.
+PASTE_PICTURE = """async () => {
+  const c = document.createElement('canvas'); c.width = 400; c.height = 300;
+  const x = c.getContext('2d'); x.fillStyle = '#e02020'; x.fillRect(0, 0, 400, 150); x.fillStyle = '#2040e0'; x.fillRect(0, 150, 400, 150);
+  const blob = await new Promise(r => c.toBlob(r, 'image/png'));
+  const dt = new DataTransfer(); dt.items.add(new File([blob], 'pic.png', { type: 'image/png' }));
+  document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+}"""
+# Red pixels in a page's picture layer.
+RED_PIXELS = """(i) => { const c = document.querySelectorAll('.page')[i].querySelector('canvas.img'); if (!c.width) return 0;
+  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let n = 0;
+  for (let k = 0; k < d.length; k += 4) if (d[k] > 180 && d[k + 1] < 90 && d[k + 3] > 0) n++; return n; }"""
+
 fails = []
 def check(cond, msg):
     print(("PASS " if cond else "FAIL ") + msg)
@@ -317,6 +330,7 @@ with sync_playwright() as p:
     E.locator("#pages-btn").click()
     E.wait_for_timeout(500)
     E.locator("#add-blank").click()
+    E.locator("#paper .paper-opt[value=plain]").click()
     E.wait_for_timeout(900)
     blank_index = int(E.locator("#page-ind").inner_text().split("/")[0]) - 1
     pen(E, blank_index, 0.3, 0.3)
@@ -338,6 +352,37 @@ with sync_playwright() as p:
     check(B.locator(".page").count() == 7 and B.locator(".page.blank-page").count() == 1, "B shows the blank page added on E")
     b_ink = B.evaluate(READ_INK)
     check(any(len(i["strokes"]) == 2 for i in b_ink["ink"]), f"and the writing on it ({b_ink['ink']})")
+
+    # A picture pasted on the blank page travels as its own file, and goes away when deleted.
+    E.evaluate(f"document.querySelectorAll('.page')[{blank_index}].scrollIntoView({{block: 'center'}})")
+    E.wait_for_timeout(500)
+    E.evaluate(PASTE_PICTURE)
+    E.wait_for_timeout(1000)
+    E.clock.run_for(50_000)
+    def remote_pictures():
+        r = repos["me/notes"]
+        files = [f for f in r.files() if re.search(r"/img-[0-9a-f]{64}\.png$", f)]
+        inks = [f for f in r.files() if f.endswith("ink.json")]
+        raw = json.loads(r.read(inks[0])) if inks else {}
+        return files, [im["src"] for im in (raw.get("images") or {}).values()]
+    def picture_up():
+        files, srcs = remote_pictures()
+        return len(files) == 1 and len(srcs) == 1 and files[0].endswith(f"img-{srcs[0]}.png")
+    check(wait_until(picture_up, E), f"a pasted picture reaches GitHub as its own file, named by its contents {remote_pictures()}")
+    B.evaluate(f"document.querySelectorAll('.page')[{blank_index}].scrollIntoView({{block: 'center'}})")
+    B.wait_for_timeout(500)
+    do_sync(B)
+    B.wait_for_timeout(1200)
+    check(B.evaluate(RED_PIXELS, blank_index) > 500, "B shows the picture after syncing")
+    if not E.locator(".selection").count():
+        E.locator(".tool[data-tool=lasso]").click()
+    E.keyboard.press("Delete")
+    E.wait_for_timeout(500)
+    E.clock.run_for(50_000)
+    check(wait_until(lambda: remote_pictures() == ([], []), E), f"deleting it removes the file from GitHub too {remote_pictures()}")
+    do_sync(B)
+    B.wait_for_timeout(800)
+    check(B.evaluate(RED_PIXELS, blank_index) == 0, "and from B")
     b.close()
 
 srv.shutdown()

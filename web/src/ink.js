@@ -1,16 +1,22 @@
-// Handwriting: pen, highlighter, eraser (whole strokes or parts of them) and lasso selection,
-// with pressure, palm rejection and undo/redo.
+// Handwriting: pen, highlighter, eraser (whole strokes or parts of them), pictures and lasso
+// selection, with pressure, palm rejection and undo/redo.
 //
-// A document's ink is { id, strokes: { [strokeId]: Stroke }, deleted: { [id]: time }, pages: { [pageId]: Blank } }.
+// A document's ink is { id, strokes: { [strokeId]: Stroke }, images: { [imageId]: Picture },
+//   deleted: { [id]: time }, pages: { [pageId]: Blank } }.
 // Stroke = { id, page, tool: "pen" | "highlighter", color, width, opacity?, pts: [x, y, pressure, ...], t }
 //   page is the PDF page index (0-based) or "b:<pageId>" for a blank page the user inserted.
-// Blank = { after, pos, w, h, t }: a blank page placed after PDF page `after` (-1: before the
-//   first), ordered by `pos` among blanks at the same place, w x h points.
+// Picture = { id, page, src, mime, x, y, w, h, t }: a picture (src = SHA-256 of its bytes, which
+//   are stored and synced as their own file) filling the box x, y (bottom-left), w x h points.
+//   It is shown upright on screen whatever the page's rotation.
+// Blank = { after, pos, w, h, t, paper?, u? }: a blank page placed after PDF page `after` (-1:
+//   before the first), ordered by `pos` among blanks at the same place, w x h points, with
+//   paper "plain" | "lined" | "grid" | "dots" (see paper.js); `u` is when the paper was changed.
 // Points are in PDF user space (points, origin bottom-left), so they stay put at any zoom
-// and map one-to-one onto PDF ink annotations. Strokes are never edited in place: a change
-// (moving, recolouring, cutting) deletes the old stroke and adds a new one, so devices merge
-// cleanly. Deleted ids (strokes and blank pages) are kept as tombstones so devices that sync
-// later learn about the deletion instead of bringing it back.
+// and map one-to-one onto PDF ink annotations. Strokes and pictures are never edited in place: a
+// change (moving, recolouring, cutting) deletes the old one and adds a new one, so devices merge
+// cleanly. Deleted ids (strokes, pictures and blank pages) are kept as tombstones so devices that
+// sync later learn about the deletion instead of bringing it back.
+import { PAPERS } from "./paper.js";
 
 export const PEN_COLORS = ["#1b1f27", "#2453c9", "#d23b30", "#1f8a4c"];
 export const HIGHLIGHT_COLORS = ["#ffd400", "#7be37b", "#ff8fc8", "#7fd4ff"];
@@ -20,8 +26,10 @@ export const ERASER_SIZES = [7, 12, 22]; // radius in screen px
 const MAX_INK_PIXELS = 10_000_000;
 
 export function emptyInk(id) {
-  return { id, strokes: {}, deleted: {}, pages: {} };
+  return { id, strokes: {}, images: {}, deleted: {}, pages: {} };
 }
+
+export const isPicture = (o) => typeof o?.src === "string";
 
 export const blankKey = (id) => `b:${id}`;
 
@@ -38,14 +46,47 @@ export function newId() {
 // Width factor from pen pressure; 0.5 (mouse, or a pen without pressure) gives the nominal width.
 export const pressureFactor = (p) => 0.45 + 1.1 * Math.min(1, Math.max(0, p));
 
-export function strokesByPage(model) {
+function byPage(items) {
   const map = new Map();
-  for (const s of Object.values(model.strokes)) {
+  for (const s of items) {
     if (!map.has(s.page)) map.set(s.page, []);
     map.get(s.page).push(s);
   }
   for (const list of map.values()) list.sort((a, b) => a.t - b.t || (a.id < b.id ? -1 : 1));
   return map;
+}
+export const strokesByPage = (model) => byPage(Object.values(model.strokes));
+export const picturesByPage = (model) => byPage(Object.values(model.images || {}));
+
+// Screen box (CSS px inside the page) of a PDF-space box, for a page viewport transform T.
+export function screenBox(T, b) {
+  const xs = [], ys = [];
+  for (const [x, y] of [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]]) {
+    xs.push(T[0] * x + T[2] * y + T[4]);
+    ys.push(T[1] * x + T[3] * y + T[5]);
+  }
+  return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
+}
+
+const pictureBox = (im) => ({ x0: im.x, y0: im.y, x1: im.x + im.w, y1: im.y + im.h });
+
+// Draws a picture upright on screen. ctx is in screen pixels (no PDF transform), T is the page's
+// viewport transform and k the extra scale of the canvas. Pictures whose file hasn't arrived
+// yet show as a grey box.
+export function drawPicture(ctx, im, T, bitmap, k = 1) {
+  const r = screenBox(T, pictureBox(im));
+  const x = r.left * k, y = r.top * k, w = (r.right - r.left) * k, h = (r.bottom - r.top) * k;
+  if (bitmap) {
+    ctx.drawImage(bitmap, x, y, w, h);
+    return;
+  }
+  ctx.save();
+  ctx.fillStyle = "#eef1f4";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = "#c9d0d9";
+  ctx.lineWidth = Math.max(1, k);
+  ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, w - 1), Math.max(0, h - 1));
+  ctx.restore();
 }
 
 export function drawStroke(ctx, s) {
@@ -170,6 +211,9 @@ function cutStroke(s, cx, cy, r) {
 }
 
 function mapStroke(s, fx, fy, widthFactor = 1) {
+  if (isPicture(s)) {
+    return { ...s, x: round2(fx(s.x)), y: round2(fy(s.y)), w: round2(s.w * widthFactor), h: round2(s.h * widthFactor) };
+  }
   const pts = s.pts.slice();
   for (let i = 0; i < pts.length; i += 3) {
     pts[i] = round2(fx(pts[i]));
@@ -178,6 +222,10 @@ function mapStroke(s, fx, fy, widthFactor = 1) {
   return { ...s, pts, width: round2(s.width * widthFactor) };
 }
 
+// Which blank pages there are and what paper each has.
+const pagesSignature = (model) => JSON.stringify(Object.entries(model?.pages || {})
+  .map(([id, b]) => [id, b.paper || "plain"]).sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+
 export class Ink extends EventTarget {
   constructor(viewer) {
     super();
@@ -185,6 +233,10 @@ export class Ink extends EventTarget {
     this.scroller = viewer.scroller;
     this.model = null;
     this.byPage = new Map();
+    this.picsByPage = new Map();
+    // Where pictures' bytes come from: async (src) -> Blob | null. Set by the app.
+    this.imageSource = null;
+    this.bitmaps = new Map(); // src -> { state: "loading" | "ready" | "missing" | "error", img }
     this.tool = "pen";
     this.style = {
       pen: { color: PEN_COLORS[0], width: WIDTHS.pen[1] },
@@ -195,7 +247,7 @@ export class Ink extends EventTarget {
     this.focusKey = null;
     this.active = null;
     this.drag = null;
-    this.sel = null;      // { page, strokes, box: { x0, y0, x1, y1 }, el, bar }
+    this.sel = null;      // { page, items, strokes, pictures, box: { x0, y0, x1, y1 }, el, bar }
     this.xform = null;    // moving or resizing the selection
     this.lastPenAt = 0;
     this.undoStack = [];
@@ -206,7 +258,7 @@ export class Ink extends EventTarget {
     viewer.addEventListener("relayout", () => { this.#refreshVisible(true); this.#placeSelection(); });
     viewer.addEventListener("visibility", () => this.#refreshVisible(false));
     viewer.addEventListener("gesturestart", () => this.#cancelActive());
-    viewer.addEventListener("pagesrebuilt", () => { this.clearSelection(); this.byPage = strokesByPage(this.model || emptyInk("")); this.redrawAll(); });
+    viewer.addEventListener("pagesrebuilt", () => { this.clearSelection(); this.#index(); this.redrawAll(); });
 
     const pages = viewer.pagesEl;
     pages.addEventListener("pointerdown", (e) => this.#down(e));
@@ -231,8 +283,10 @@ export class Ink extends EventTarget {
   setModel(model) {
     this.clearSelection();
     if (!model.pages) model.pages = {};
+    if (!model.images) model.images = {};
+    if (this.model?.id !== model.id) this.#forgetBitmaps();
     this.model = model;
-    this.byPage = strokesByPage(model);
+    this.#index();
     this.undoStack = [];
     this.redoStack = [];
     this.#emit("history");
@@ -256,6 +310,65 @@ export class Ink extends EventTarget {
 
   #pageOf(key) { return this.viewer.byKey?.get(key); }
 
+  #index() {
+    const m = this.model || emptyInk("");
+    this.byPage = strokesByPage(m);
+    this.picsByPage = picturesByPage(m);
+  }
+
+  // ---------- pictures' bitmaps ----------
+
+  // The decoded picture, or null while it loads (the page is redrawn when it is ready).
+  bitmap(src) {
+    let b = this.bitmaps.get(src);
+    if (!b) {
+      b = { state: "loading", img: null };
+      this.bitmaps.set(src, b);
+      this.#loadBitmap(src, b);
+    }
+    return b.state === "ready" ? b.img : null;
+  }
+
+  async #loadBitmap(src, b) {
+    let blob = null;
+    try { blob = await this.imageSource?.(src); } catch { blob = null; }
+    if (this.bitmaps.get(src) !== b) return;
+    if (!blob) { b.state = "missing"; return; } // not downloaded yet: see pictureArrived()
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.src = url;
+    try {
+      await img.decode();
+      b.img = img;
+      b.url = url;
+      b.state = "ready";
+    } catch {
+      URL.revokeObjectURL(url);
+      b.state = "error";
+    }
+    if (this.bitmaps.get(src) !== b) return;
+    for (const p of this.viewer.visible) {
+      if ((this.picsByPage.get(p.key) || []).some((im) => im.src === src)) this.#drawPictures(p);
+    }
+    this.#emit("bitmap");
+  }
+
+  // A picture's file was stored (pasted here or downloaded by a sync): draw it where it was missing.
+  pictureArrived(src) {
+    const b = this.bitmaps.get(src);
+    if (b && b.state !== "ready" && b.state !== "loading") {
+      this.bitmaps.delete(src);
+      for (const p of this.viewer.visible) {
+        if ((this.picsByPage.get(p.key) || []).some((im) => im.src === src)) this.#drawPictures(p);
+      }
+    }
+  }
+
+  #forgetBitmaps() {
+    for (const b of this.bitmaps.values()) if (b.url) URL.revokeObjectURL(b.url);
+    this.bitmaps.clear();
+  }
+
   // ---------- drawing on screen ----------
 
   #inkScale(p) {
@@ -277,18 +390,42 @@ export class Ink extends EventTarget {
     return ctx;
   }
 
-  // `preview` swaps strokes for moved or resized copies while the selection is dragged.
+  // `preview` swaps strokes and pictures for moved or resized copies while the selection is dragged.
   drawPage(p, preview = null) {
     if (!this.model) return;
     const ctx = this.#prepare(p.inkCanvas, p);
     for (const s of this.byPage.get(p.key) || []) drawStroke(ctx, preview?.get(s.id) || s);
+    this.#drawPictures(p, preview);
     p.inkScale = this.viewer.scale;
+  }
+
+  #drawPictures(p, preview = null) {
+    const list = this.picsByPage.get(p.key) || [];
+    const canvas = p.imgCanvas;
+    if (!canvas) return;
+    if (!list.length) {
+      if (canvas.width) canvas.width = canvas.height = 0;
+      return;
+    }
+    const ctx = this.#prepare(canvas, p);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const k = this.#inkScale(p);
+    for (const im of list) {
+      const o = preview?.get(im.id) || im;
+      drawPicture(ctx, o, p.viewport.transform, this.bitmap(o.src), k);
+    }
+  }
+
+  #hide(p) {
+    p.inkCanvas.width = p.inkCanvas.height = 0;
+    if (p.imgCanvas?.width) p.imgCanvas.width = p.imgCanvas.height = 0;
+    p.inkScale = 0;
   }
 
   redrawAll() {
     for (const p of this.viewer.pages) {
       if (this.viewer.visible.has(p)) this.drawPage(p);
-      else { p.inkCanvas.width = p.inkCanvas.height = 0; p.inkScale = 0; }
+      else this.#hide(p);
     }
   }
 
@@ -297,7 +434,7 @@ export class Ink extends EventTarget {
     for (const p of this.viewer.pages) {
       const vis = this.viewer.visible.has(p);
       if (vis && (force || p.inkScale !== this.viewer.scale)) this.drawPage(p);
-      else if (!vis && p.inkScale) { p.inkCanvas.width = p.inkCanvas.height = 0; p.inkScale = 0; }
+      else if (!vis && p.inkScale) this.#hide(p);
     }
   }
 
@@ -461,7 +598,7 @@ export class Ink extends EventTarget {
     };
     if (a.tool === "highlighter") stroke.opacity = HIGHLIGHT_OPACITY;
     this.#add(stroke);
-    this.#push({ type: "add", strokes: [stroke] });
+    this.#push({ type: "add", items: [stroke] });
     this.#changed();
   }
 
@@ -499,12 +636,23 @@ export class Ink extends EventTarget {
   #finishErase(a) {
     const added = [...a.added.values()];
     if (!a.erased.length && !added.length) return;
-    this.#push(added.length ? { type: "replace", before: a.erased, after: added } : { type: "erase", strokes: a.erased });
+    this.#push(added.length ? { type: "replace", before: a.erased, after: added } : { type: "erase", items: a.erased });
   }
 
   // ---------- lasso selection ----------
 
   #select(p, pts) {
+    const pictures = this.picsByPage.get(p.key) || [];
+    if (!pts.length) return;
+    // A tap picks the topmost picture under it.
+    let far = 0;
+    for (let i = 3; i < pts.length; i += 3) far = Math.max(far, Math.hypot(pts[i] - pts[0], pts[i + 1] - pts[1]));
+    if (far * this.viewer.scale < 8) {
+      const [x, y] = pts;
+      const hit = pictures.filter((im) => x >= im.x && x <= im.x + im.w && y >= im.y && y <= im.y + im.h).pop();
+      if (hit) this.#setSelection(p, [hit]);
+      return;
+    }
     if (pts.length < 9) return;
     const poly = [];
     for (let i = 0; i < pts.length; i += 3) poly.push(pts[i], pts[i + 1]);
@@ -514,15 +662,17 @@ export class Ink extends EventTarget {
       for (let i = 0; i < s.pts.length; i += 3) if (inPolygon(s.pts[i], s.pts[i + 1], poly)) inside++;
       return inside > 0 && inside >= n * 0.5;
     });
+    // A picture is chosen when the loop goes around its middle.
+    for (const im of pictures) if (inPolygon(im.x + im.w / 2, im.y + im.h / 2, poly)) chosen.push(im);
     if (chosen.length) this.#setSelection(p, chosen);
   }
 
-  #setSelection(p, strokes) {
+  #setSelection(p, items) {
     this.clearSelection();
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const s of strokes) {
-      const b = bbox(s);
-      const pad = s.width / 2;
+    for (const s of items) {
+      const b = isPicture(s) ? pictureBox(s) : bbox(s);
+      const pad = isPicture(s) ? 0 : s.width / 2;
       x0 = Math.min(x0, b.x0 - pad); y0 = Math.min(y0, b.y0 - pad);
       x1 = Math.max(x1, b.x1 + pad); y1 = Math.max(y1, b.y1 + pad);
     }
@@ -539,7 +689,11 @@ export class Ink extends EventTarget {
     bar.className = "sel-bar";
     bar.setAttribute("role", "toolbar");
     p.el.append(el, bar);
-    this.sel = { page: p, strokes, box: { x0, y0, x1, y1 }, el, bar };
+    this.sel = {
+      page: p, items, box: { x0, y0, x1, y1 }, el, bar,
+      strokes: items.filter((s) => !isPicture(s)),
+      pictures: items.filter(isPicture),
+    };
     this.#placeSelection();
     this.#emit("selection");
   }
@@ -555,15 +709,7 @@ export class Ink extends EventTarget {
   get selection() { return this.sel; }
 
   // Screen box (CSS px inside the page) of a PDF-space box.
-  #screenBox(p, b) {
-    const T = p.viewport.transform;
-    const xs = [], ys = [];
-    for (const [x, y] of [[b.x0, b.y0], [b.x1, b.y0], [b.x0, b.y1], [b.x1, b.y1]]) {
-      xs.push(T[0] * x + T[2] * y + T[4]);
-      ys.push(T[1] * x + T[3] * y + T[5]);
-    }
-    return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
-  }
+  #screenBox(p, b) { return screenBox(p.viewport.transform, b); }
 
   #placeSelection(box = this.sel?.box) {
     const sel = this.sel;
@@ -619,7 +765,7 @@ export class Ink extends EventTarget {
     if (!this.xformRaf) this.xformRaf = requestAnimationFrame(() => {
       this.xformRaf = 0;
       if (!this.xform || !this.sel) return;
-      const preview = new Map(this.sel.strokes.map((s) => [s.id, this.#transformed(s)]));
+      const preview = new Map(this.sel.items.map((s) => [s.id, this.#transformed(s)]));
       this.drawPage(this.sel.page, preview);
       this.#placeSelection(this.#transformedBox(this.sel.box));
     });
@@ -655,31 +801,32 @@ export class Ink extends EventTarget {
       return;
     }
     this.xform = x; // #transformed reads it
-    const after = sel.strokes.map((s) => ({ ...this.#transformed(s), id: newId() }));
+    const after = sel.items.map((s) => ({ ...this.#transformed(s), id: newId() }));
     this.xform = null;
-    this.#replace(sel.strokes, after);
+    this.#replace(sel.items, after);
     this.#setSelection(sel.page, after);
   }
 
-  // Changes to the selection, used by its buttons.
+  // Changes to the selection, used by its buttons. Colours apply to the strokes only.
   recolorSelection(index) {
     const sel = this.sel;
-    if (!sel) return;
+    if (!sel?.strokes.length) return;
     const after = sel.strokes.map((s) => ({
       ...s, id: newId(),
       color: s.tool === "highlighter" ? HIGHLIGHT_COLORS[index] : PEN_COLORS[index],
     }));
     this.#replace(sel.strokes, after);
-    this.#setSelection(sel.page, after);
+    this.#setSelection(sel.page, [...after, ...sel.pictures]);
   }
 
   duplicateSelection() {
     const sel = this.sel;
     if (!sel) return;
     const off = 14;
-    const copies = sel.strokes.map((s) => ({ ...mapStroke(s, (v) => v + off, (v) => v - off), id: newId(), t: Date.now() }));
+    const now = Date.now();
+    const copies = sel.items.map((s, i) => ({ ...mapStroke(s, (v) => v + off, (v) => v - off), id: newId(), t: now + i * 1e-3 }));
     for (const c of copies) this.#add(c, true);
-    this.#push({ type: "add", strokes: copies });
+    this.#push({ type: "add", items: copies });
     this.#changed();
     this.#setSelection(sel.page, copies);
   }
@@ -688,9 +835,60 @@ export class Ink extends EventTarget {
     const sel = this.sel;
     if (!sel) return;
     this.clearSelection();
-    this.#removeAll(sel.strokes);
-    this.#push({ type: "erase", strokes: sel.strokes });
+    this.#removeAll(sel.items);
+    this.#push({ type: "erase", items: sel.items });
     this.#changed();
+  }
+
+  // ---------- pictures ----------
+
+  // Put pictures ({ src, mime, width, height } in pixels) on a page, upright on screen and at most
+  // about two thirds of the page. `at` = { key, x, y } (CSS px inside that page) centres them on a
+  // point, otherwise they go in the middle of the visible part of the current page. Returns the
+  // new pictures; they become the selection so they can be moved and resized right away.
+  addPictures(list, at = null) {
+    if (!this.model || !list.length) return [];
+    let p = at ? this.#pageOf(at.key) : null;
+    let cx, cy;
+    if (p) { cx = at.x; cy = at.y; } else {
+      p = this.viewer.pages[this.viewer.currentPage()];
+      if (!p) return [];
+      const r = p.el.getBoundingClientRect();
+      const box = this.scroller.getBoundingClientRect();
+      const left = Math.max(r.left, box.left), right = Math.min(r.right, box.right);
+      const top = Math.max(r.top, box.top), bottom = Math.min(r.bottom, box.bottom);
+      cx = (right > left ? (left + right) / 2 : r.left + r.width / 2) - r.left;
+      cy = (bottom > top ? (top + bottom) / 2 : r.top + r.height / 2) - r.top;
+    }
+    const vp = p.viewport;
+    const pageW = vp.width, pageH = vp.height; // CSS px, as seen on screen
+    const added = [];
+    const now = Date.now();
+    list.forEach((pic, i) => {
+      // 96 pixels to the inch, shrunk to fit.
+      let w = pic.width * 0.75 * this.viewer.scale;
+      let h = pic.height * 0.75 * this.viewer.scale;
+      const f = Math.min(1, (pageW * 0.66) / w, (pageH * 0.6) / h);
+      w *= f;
+      h *= f;
+      const off = i * 24;
+      const left = Math.min(Math.max(0, cx - w / 2 + off), Math.max(0, pageW - w));
+      const top = Math.min(Math.max(0, cy - h / 2 + off), Math.max(0, pageH - h));
+      const [ax, ay] = vp.convertToPdfPoint(left, top);
+      const [bx, by] = vp.convertToPdfPoint(left + w, top + h);
+      const item = {
+        id: newId(), page: p.key, src: pic.src, mime: pic.mime,
+        x: round2(Math.min(ax, bx)), y: round2(Math.min(ay, by)),
+        w: round2(Math.abs(bx - ax)), h: round2(Math.abs(by - ay)),
+        t: now + i * 1e-3,
+      };
+      this.#add(item, true);
+      added.push(item);
+    });
+    this.#push({ type: "add", items: added });
+    this.#changed();
+    this.#setSelection(p, added);
+    return added;
   }
 
   #replace(before, after) {
@@ -703,7 +901,7 @@ export class Ink extends EventTarget {
   // ---------- blank pages ----------
 
   // Insert a blank page after the page with this key, sized like it.
-  addBlankPage(afterKey) {
+  addBlankPage(afterKey, paper = "plain") {
     if (!this.model) return null;
     const ref = this.#pageOf(afterKey);
     const blanks = blankPages(this.model);
@@ -722,6 +920,7 @@ export class Ink extends EventTarget {
     }
     const id = newId();
     this.model.pages[id] = { after, pos, w: round2(ref?.w || 595), h: round2(ref?.h || 842), t: Date.now() };
+    if (PAPERS.includes(paper) && paper !== "plain") this.model.pages[id].paper = paper;
     this.clearSelection();
     this.focusKey = blankKey(id); // the new page is shown
     this.#emit("pages");
@@ -738,7 +937,12 @@ export class Ink extends EventTarget {
       delete this.model.strokes[s.id];
       this.model.deleted[s.id] = Date.now();
     }
+    for (const im of this.picsByPage.get(key) || []) {
+      delete this.model.images[im.id];
+      this.model.deleted[im.id] = Date.now();
+    }
     this.byPage.delete(key);
+    this.picsByPage.delete(key);
     delete this.model.pages[id];
     this.model.deleted[id] = Date.now();
     this.undoStack = [];
@@ -749,11 +953,34 @@ export class Ink extends EventTarget {
     this.#changed();
   }
 
-  strokeCount(key) { return (this.byPage.get(key) || []).length; }
+  // Strokes and pictures on a page.
+  itemCount(key) { return (this.byPage.get(key) || []).length + (this.picsByPage.get(key) || []).length; }
+
+  // Change a blank page's paper. The newer change wins when devices merge (see `u`).
+  setBlankPaper(key, paper) {
+    const id = String(key).slice(2);
+    const b = this.model?.pages[id];
+    if (!b || !PAPERS.includes(paper) || (b.paper || "plain") === paper) return;
+    this.model.pages[id] = { ...b, paper, u: Math.max(Date.now(), (b.u || b.t || 0) + 1) };
+    this.focusKey = key;
+    this.#emit("pages");
+    this.focusKey = null;
+    this.#changed();
+  }
 
   // ---------- model changes ----------
 
   #add(s, redraw = false) {
+    if (isPicture(s)) {
+      this.model.images[s.id] = s;
+      delete this.model.deleted[s.id];
+      const list = [...(this.picsByPage.get(s.page) || []), s];
+      list.sort((a, b) => a.t - b.t || (a.id < b.id ? -1 : 1));
+      this.picsByPage.set(s.page, list);
+      const p = this.#pageOf(s.page);
+      if (p && this.viewer.visible.has(p)) this.#drawPictures(p);
+      return;
+    }
     this.model.strokes[s.id] = s;
     delete this.model.deleted[s.id];
     if (!this.byPage.has(s.page)) this.byPage.set(s.page, []);
@@ -772,10 +999,12 @@ export class Ink extends EventTarget {
   }
 
   #remove(s) {
-    delete this.model.strokes[s.id];
+    const pic = isPicture(s);
+    delete (pic ? this.model.images : this.model.strokes)[s.id];
     this.model.deleted[s.id] = Date.now();
-    const list = this.byPage.get(s.page);
-    if (list) this.byPage.set(s.page, list.filter((q) => q.id !== s.id));
+    const map = pic ? this.picsByPage : this.byPage;
+    const list = map.get(s.page);
+    if (list) map.set(s.page, list.filter((q) => q.id !== s.id));
   }
 
   // Restored strokes get new ids: the old ids are tombstoned and may already be synced. Other
@@ -786,16 +1015,18 @@ export class Ink extends EventTarget {
     const map = new Map(strokes.map((s, i) => [s.id, copies[i]]));
     const swap = (list) => list?.map((s) => map.get(s.id) || s);
     for (const action of [...this.undoStack, ...this.redoStack]) {
-      if (action.strokes) action.strokes = swap(action.strokes);
+      if (action.items) action.items = swap(action.items);
       if (action.before) action.before = swap(action.before);
       if (action.after) action.after = swap(action.after);
     }
     return copies;
   }
 
-  #removeAll(strokes) {
+  #removeAll(items) {
     const pages = new Set();
-    for (const s of strokes) { if (this.model.strokes[s.id]) { this.#remove(s); pages.add(s.page); } }
+    for (const s of items) {
+      if ((isPicture(s) ? this.model.images : this.model.strokes)[s.id]) { this.#remove(s); pages.add(s.page); }
+    }
     for (const key of pages) { const p = this.#pageOf(key); if (p && this.viewer.visible.has(p)) this.drawPage(p); }
   }
 
@@ -810,8 +1041,8 @@ export class Ink extends EventTarget {
     const a = this.undoStack.pop();
     if (!a) return;
     this.clearSelection();
-    if (a.type === "add") this.#removeAll(a.strokes);
-    else if (a.type === "erase") a.strokes = this.#restore(a.strokes);
+    if (a.type === "add") this.#removeAll(a.items);
+    else if (a.type === "erase") a.items = this.#restore(a.items);
     else { this.#removeAll(a.after); a.before = this.#restore(a.before); }
     this.redoStack.push(a);
     this.#emit("history");
@@ -822,25 +1053,26 @@ export class Ink extends EventTarget {
     const a = this.redoStack.pop();
     if (!a) return;
     this.clearSelection();
-    if (a.type === "add") a.strokes = this.#restore(a.strokes);
-    else if (a.type === "erase") this.#removeAll(a.strokes);
+    if (a.type === "add") a.items = this.#restore(a.items);
+    else if (a.type === "erase") this.#removeAll(a.items);
     else { this.#removeAll(a.before); a.after = this.#restore(a.after); }
     this.undoStack.push(a);
     this.#emit("history");
     this.#changed();
   }
 
-  // Replace the model (after a sync merged in strokes or pages from another device).
+  // Replace the model (after a sync merged in strokes, pictures or pages from another device).
   replaceModel(model) {
-    const pagesBefore = JSON.stringify(Object.keys(this.model?.pages || {}).sort());
+    const pagesBefore = pagesSignature(this.model);
     if (!model.pages) model.pages = {};
+    if (!model.images) model.images = {};
     this.clearSelection();
     this.model = model;
-    this.byPage = strokesByPage(model);
+    this.#index();
     this.undoStack = [];
     this.redoStack = [];
     this.#emit("history");
-    if (JSON.stringify(Object.keys(model.pages).sort()) !== pagesBefore) this.#emit("pages");
+    if (pagesSignature(model) !== pagesBefore) this.#emit("pages");
     this.redrawAll();
   }
 

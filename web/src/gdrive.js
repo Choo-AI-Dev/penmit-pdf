@@ -1,8 +1,9 @@
 // Google Drive storage: a "Penmit PDF" folder in the user's own Drive, one subfolder per PDF
-// (named by its SHA-256) holding document.pdf, meta.json and ink.json. With the drive.file
+// (named by its SHA-256) holding document.pdf, meta.json, ink.json and the pictures placed on
+// its pages (img-<sha256>.png/.jpg). With the drive.file
 // scope the app sees only what it created there. Each file carries its content hash in
 // appProperties, so unchanged files are recognised without downloading them.
-import { StorageError, gitBlobSha } from "./sync.js";
+import { StorageError, gitBlobSha, PICTURE_RE, pictureMime } from "./sync.js";
 import { googleAuth } from "./googleauth.js";
 import { isDesktop } from "./platform.js";
 
@@ -11,6 +12,7 @@ const UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 const FOLDER = "application/vnd.google-apps.folder";
 const ROOT_NAME = "Penmit PDF";
 const MIME = { "document.pdf": "application/pdf", "meta.json": "application/json", "ink.json": "application/json" };
+const mimeOf = (name) => MIME[name] || pictureMime(name);
 const RESUMABLE_OVER = 4 * 1024 * 1024;
 
 // The desktop app sends Drive requests from its main process, because its app:// pages are
@@ -103,12 +105,14 @@ export class DriveBackend {
     }
     const docs = new Map();
     for (const it of items) {
-      if (it.mimeType === FOLDER || !MIME[it.name]) continue;
+      const picture = PICTURE_RE.exec(it.name);
+      if (it.mimeType === FOLDER || !(MIME[it.name] || picture)) continue;
       const docId = docOfFolder.get(it.parents?.[0]);
       if (!docId || this.fileOf.has(`${docId}/${it.name}`)) continue;
       this.fileOf.set(`${docId}/${it.name}`, it.id);
-      if (!docs.has(docId)) docs.set(docId, {});
-      docs.get(docId)[it.name.split(".")[0]] = it.appProperties?.penmitSha || `drive:${it.id}`;
+      if (!docs.has(docId)) docs.set(docId, { pictures: new Map() });
+      if (picture) docs.get(docId).pictures.set(picture[1], it.name);
+      else docs.get(docId)[it.name.split(".")[0]] = it.appProperties?.penmitSha || `drive:${it.id}`;
     }
     return { docs };
   }
@@ -129,10 +133,10 @@ export class DriveBackend {
     const existing = this.fileOf.get(`${docId}/${name}`);
     const meta = existing
       ? { appProperties: { penmitSha: sha } }
-      : { name, parents: [folder], mimeType: MIME[name], appProperties: { penmitSha: sha } };
+      : { name, parents: [folder], mimeType: mimeOf(name), appProperties: { penmitSha: sha } };
     const id = bytes.byteLength > RESUMABLE_OVER
-      ? await this.#resumable(existing, meta, bytes, MIME[name])
-      : await this.#multipart(existing, meta, bytes, MIME[name]);
+      ? await this.#resumable(existing, meta, bytes, mimeOf(name))
+      : await this.#multipart(existing, meta, bytes, mimeOf(name));
     this.fileOf.set(`${docId}/${name}`, id);
     return sha;
   }
@@ -171,6 +175,18 @@ export class DriveBackend {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ trashed: true }),
     });
+  }
+
+  // A picture no longer used: into the bin as well.
+  async removeFile(docId, name) {
+    const id = this.fileOf.get(`${docId}/${name}`);
+    if (!id) return;
+    await this.request(`${API}/files/${id}?fields=id`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trashed: true }),
+    });
+    this.fileOf.delete(`${docId}/${name}`);
   }
 
   async finish() { /* every write was already saved */ }

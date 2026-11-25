@@ -1,7 +1,8 @@
 import { t, applyI18n, lang } from "./i18n.js";
 import { db, requestPersistence, sha256Hex } from "./db.js";
 import { Viewer, openPdf, renderThumbnail, isPasswordError, MIN_ZOOM, MAX_ZOOM } from "./viewer.js";
-import { Ink, emptyInk, strokesByPage, blankPages, PEN_COLORS, HIGHLIGHT_COLORS, WIDTHS, ERASER_SIZES, drawStroke } from "./ink.js";
+import { Ink, emptyInk, strokesByPage, picturesByPage, blankPages, PEN_COLORS, HIGHLIGHT_COLORS, WIDTHS, ERASER_SIZES, drawStroke, drawPicture } from "./ink.js";
+import { PAPERS, paperOf, drawPaper } from "./paper.js";
 import { exportAnnotated, EncryptedPdfError } from "./export.js";
 import { GitHub, GitHubBackend } from "./github.js";
 import { DriveBackend } from "./gdrive.js";
@@ -9,7 +10,7 @@ import { googleAuth, NeedsGoogleSignIn } from "./googleauth.js";
 import { sync, mergeInk, sameInk } from "./sync.js";
 import { saveFile, registerServiceWorker, isDesktop, isAndroidApp } from "./platform.js";
 
-export const VERSION = "0.5.2";
+export const VERSION = "0.6.0";
 const $ = (sel) => document.querySelector(sel);
 
 // ---------- settings ----------
@@ -23,6 +24,7 @@ const settings = {
   style: null,
   layout: "single",
   sort: "recent",
+  paper: "plain",
   lastSync: {},
   github: { owner: "", repo: "", branch: "", token: "" },
   ...readSettings(),
@@ -75,6 +77,18 @@ ink.setTool(settings.tool || "pen");
 
 let current = null; // { id, doc, bytes }
 
+// Pictures placed on pages are stored apart from the ink, one record per picture file.
+const pictureKey = (docId, src) => `${docId}/${src}`;
+async function pictureFile(docId, src) {
+  const r = await db.get("images", pictureKey(docId, src));
+  return r ? { bytes: new Uint8Array(r.bytes), mime: r.mime } : null;
+}
+ink.imageSource = async (src) => {
+  if (!current) return null;
+  const f = await pictureFile(current.id, src);
+  return f ? new Blob([f.bytes], { type: f.mime }) : null;
+};
+
 function show(view) {
   closeMenu();
   $("#library").hidden = view !== "library";
@@ -102,6 +116,7 @@ function closeMenu() {
 }
 function showMenu(menu, anchor, point = null) {
   closeMenu();
+  $("#toast").hidden = true; // on phones it would cover the menu
   openMenuEl = menu;
   menuAnchor = anchor;
   anchor?.setAttribute("aria-expanded", "true");
@@ -388,6 +403,7 @@ async function openDoc(id) {
   const model = (await db.get("ink", id)) || emptyInk(id);
   await viewer.load(pdf, { layout: view.layout || settings.layout, zoom: view.zoom || 1, page: view.page || 0, blanks: blankPages(model) });
   ink.setModel(model);
+  forgetUnusedPictures(id, model);
   closePanel();
   syncLayoutButtons();
   syncZoomLabel();
@@ -395,6 +411,16 @@ async function openDoc(id) {
   flashPageIndicator();
   syncHistoryButtons();
   await db.put("docs", { ...d, openedAt: Date.now(), pageCount: d.pageCount || pdf.numPages });
+}
+
+// Picture files no picture on the pages uses any more (deleted ones can't be undone after reopening).
+async function forgetUnusedPictures(id, model) {
+  try {
+    const used = new Set(Object.values(model.images || {}).map((im) => im.src));
+    for (const key of await db.pictureKeys(id)) if (!used.has(key.slice(id.length + 1))) await db.del("images", key);
+  } catch (e) {
+    console.warn("pictures", e);
+  }
 }
 
 async function closeDoc() {
@@ -593,15 +619,17 @@ function goToPageFromPanel(index) {
 
 const MORE_ICON = '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18" cy="12" r="1.3"/></svg>';
 function thumbMenu(p) {
-  const items = [{ label: t("addBlankAfter"), action: "add-blank", run: () => addBlankAfter(p.key) }];
+  const items = [{ label: t("addBlankAfter"), action: "add-blank", run: () => choosePaper({ add: p.key }) }];
   if (p.blank) {
+    items.push({ label: t("changePaper"), action: "change-paper", run: () => choosePaper({ change: p.key }) });
     items.push("-", {
       label: t("removeBlank"), action: "remove-blank", danger: true,
-      run: () => { if (!ink.strokeCount(p.key) || confirm(t("confirmRemoveBlank"))) ink.removeBlankPage(p.key); },
+      run: () => { if (!ink.itemCount(p.key) || confirm(t("confirmRemoveBlank"))) ink.removeBlankPage(p.key); },
     });
   }
   return items;
 }
+const PAPER_LABEL = { plain: "blankLabel", lined: "paperLined", grid: "paperGrid", dots: "paperDots" };
 function renderThumbs() {
   if (!panelOpen || panelTab !== "thumbs") return;
   const list = $("#thumbs");
@@ -618,7 +646,7 @@ function renderThumbs() {
     const open = document.createElement("button");
     open.type = "button";
     open.className = "thumb-btn";
-    open.setAttribute("aria-label", p.blank ? `${t("pageLabel", p.index + 1)} (${t("blankLabel")})` : t("pageLabel", p.index + 1));
+    open.setAttribute("aria-label", p.blank ? `${t("pageLabel", p.index + 1)} (${t(PAPER_LABEL[p.paper] || "blankLabel")})` : t("pageLabel", p.index + 1));
     const img = document.createElement("div");
     img.className = "thumb-img";
     const canvas = document.createElement("canvas");
@@ -634,7 +662,7 @@ function renderThumbs() {
     label.append(num);
     if (p.blank) {
       const small = document.createElement("small");
-      small.textContent = ` · ${t("blankLabel")}`;
+      small.textContent = ` · ${t(PAPER_LABEL[p.paper] || "blankLabel")}`;
       label.append(small);
     }
     const more = document.createElement("button");
@@ -671,11 +699,27 @@ async function drawThumb(li, force = false) {
     const vp = p.proxy.getViewport({ scale });
     T = vp.transform;
     try { await p.proxy.render({ canvasContext: ctx, viewport: vp, background: "#ffffff" }).promise; } catch { return; }
+  } else {
+    ctx.setTransform(...T);
+    drawPaper(ctx, p.paper, p.w, p.h, scale);
   }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  for (const im of ink.picsByPage.get(p.key) || []) drawPicture(ctx, im, T, ink.bitmap(im.src));
   ctx.setTransform(...T);
   for (const s of ink.byPage.get(p.key) || []) drawStroke(ctx, s);
   li.querySelector(".thumb-img canvas")?.replaceWith(canvas);
 }
+// Pictures still loading show grey in the thumbnails until they're ready.
+let bitmapThumbTimer = 0;
+ink.addEventListener("bitmap", () => {
+  if (!panelOpen || panelTab !== "thumbs") return;
+  clearTimeout(bitmapThumbTimer);
+  bitmapThumbTimer = setTimeout(() => {
+    for (const li of document.querySelectorAll('#thumbs .thumb[data-drawn="1"]')) {
+      if (ink.picsByPage.get(keyFromString(li.dataset.key))?.length) drawThumb(li, true);
+    }
+  }, 120);
+});
 // Keep the thumbnails of the pages being written on up to date.
 let thumbTimer = 0;
 function scheduleThumbRefresh() {
@@ -696,14 +740,45 @@ viewer.addEventListener("pagechange", (e) => {
   }
 });
 
-function addBlankAfter(key) {
-  const newKey = ink.addBlankPage(key);
+function addBlankAfter(key, paper) {
+  const newKey = ink.addBlankPage(key, paper);
   const p = newKey && viewer.byKey.get(newKey);
   if (p) toast(t("blankAdded", p.index + 1));
 }
 $("#add-blank").addEventListener("click", () => {
   const p = viewer.pages[viewer.currentPage()];
-  if (p) addBlankAfter(p.key);
+  if (p) choosePaper({ add: p.key });
+});
+
+// Choosing the paper for a new blank page ({ add: key of the page before it }) or for an
+// existing one ({ change: its key }).
+const paperDialog = $("#paper");
+let paperTarget = null;
+function choosePaper(target) {
+  const ref = viewer.byKey.get(target.add ?? target.change);
+  if (!ref || !ink.model) return;
+  paperTarget = target;
+  const changing = target.change !== undefined;
+  const selected = changing ? paperOf(ink.model.pages[String(target.change).slice(2)]) : (PAPERS.includes(settings.paper) ? settings.paper : "plain");
+  $("#paper-title").textContent = t(changing ? "changePaper" : "addBlank");
+  $("#paper-sub").textContent = changing ? t("pageLabel", ref.index + 1) : t("paperAfter", ref.index + 1);
+  for (const b of paperDialog.querySelectorAll(".paper-opt")) b.setAttribute("aria-checked", String(b.value === selected));
+  paperDialog.returnValue = "";
+  paperDialog.showModal();
+  paperDialog.querySelector('.paper-opt[aria-checked="true"]')?.focus();
+}
+paperDialog.addEventListener("close", () => {
+  const target = paperTarget;
+  paperTarget = null;
+  const paper = paperDialog.returnValue;
+  if (!target || !PAPERS.includes(paper)) return;
+  if (target.change !== undefined) {
+    ink.setBlankPaper(target.change, paper);
+    return;
+  }
+  settings.paper = paper;
+  saveSettings();
+  addBlankAfter(target.add, paper);
 });
 
 async function renderOutline() {
@@ -876,16 +951,18 @@ function renderSelectionBar() {
     bar.append(b);
     return b;
   };
-  PEN_COLORS.forEach((c, i) => {
-    const b = button(t("selColor", i + 1), "", () => ink.recolorSelection(i), "sel-color");
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.style.setProperty("--c", c);
-    b.append(dot);
-  });
-  const sep = document.createElement("span");
-  sep.className = "sep";
-  bar.append(sep);
+  if (sel.strokes.length) {
+    PEN_COLORS.forEach((c, i) => {
+      const b = button(t("selColor", i + 1), "", () => ink.recolorSelection(i), "sel-color");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.setProperty("--c", c);
+      b.append(dot);
+    });
+    const sep = document.createElement("span");
+    sep.className = "sep";
+    bar.append(sep);
+  }
   button(t("selDuplicate"), SEL_ICON.copy, () => ink.duplicateSelection(), "sel-duplicate");
   button(t("selDelete"), SEL_ICON.trash, () => ink.deleteSelection(), "sel-delete danger");
 }
@@ -902,18 +979,18 @@ for (const b of document.querySelectorAll(".tool[data-tool]")) b.addEventListene
 async function exportCurrent() {
   if (!current) return;
   await flushInk();
-  await exportPdf(current.bytes, ink.model, current.doc.name);
+  await exportPdf(current.id, current.bytes, ink.model, current.doc.name);
 }
 async function exportDoc(id) {
   const d = await db.get("docs", id);
   const file = await db.get("files", id);
   if (!d || !file) return;
-  await exportPdf(file.bytes, (await db.get("ink", id)) || emptyInk(id), d.name);
+  await exportPdf(id, file.bytes, (await db.get("ink", id)) || emptyInk(id), d.name);
 }
-async function exportPdf(pdfBytes, model, name) {
+async function exportPdf(id, pdfBytes, model, name) {
   toast(t("exporting"), { ms: 60_000 });
   try {
-    const bytes = await exportAnnotated(pdfBytes, strokesByPage(model), blankPages(model));
+    const bytes = await exportAnnotated(pdfBytes, strokesByPage(model), blankPages(model), picturesByPage(model), (src) => pictureFile(id, src));
     const base = name.replace(/\.pdf$/i, "");
     const saved = await saveFile(`${base} (Penmit).pdf`, bytes);
     if (saved !== false) toast(t("exported")); else $("#toast").hidden = true;
@@ -946,6 +1023,12 @@ const store = {
   async removeDoc(id) {
     if (current?.id === id) { viewer.clear(); ink.model = null; current = null; show("library"); }
     await db.removeDoc(id);
+  },
+  hasPicture: (id, src) => db.has("images", pictureKey(id, src)),
+  getPicture: async (id, src) => (await pictureFile(id, src))?.bytes || null,
+  async putPicture(id, src, mime, bytes) {
+    await db.put("images", { id: pictureKey(id, src), doc: id, src, mime, bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) });
+    if (current?.id === id) ink.pictureArrived(src);
   },
 };
 
@@ -1169,17 +1252,140 @@ window.addEventListener("drop", (e) => {
   $("#drop-hint").hidden = true;
   if (!e.dataTransfer?.files?.length) return;
   e.preventDefault();
-  importFiles(e.dataTransfer.files);
+  const files = [...e.dataTransfer.files];
+  const pictures = files.filter((f) => f.type.startsWith("image/"));
+  if (current && pictures.length) {
+    const el = document.elementFromPoint(e.clientX, e.clientY)?.closest?.(".page");
+    const p = el?.__page;
+    const r = el?.getBoundingClientRect();
+    insertPictures(pictures, p ? { key: p.key, x: e.clientX - r.left, y: e.clientY - r.top } : null);
+    const rest = files.filter((f) => !f.type.startsWith("image/"));
+    if (rest.length) importFiles(rest);
+    return;
+  }
+  importFiles(files);
 });
 // Desktop app: files opened from the file manager ("Open with Penmit PDF").
 window.penmitDesktop?.onOpenFiles?.((files) => {
   importFiles(files.map((f) => new File([f.bytes], f.name, { type: "application/pdf" })));
 });
 
+// ---------- pictures: paste, choose or drop them onto a page ----------
+const MAX_PICTURE_SIDE = 2400; // px; bigger photos are scaled down (and their metadata dropped)
+const toBlob = (canvas, type, quality) => new Promise((resolve, reject) => {
+  canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob"))), type, quality);
+});
+function opaque(ctx, w, h) {
+  const data = ctx.getImageData(0, 0, w, h).data;
+  for (let i = 3; i < data.length; i += 4) if (data[i] !== 255) return false;
+  return true;
+}
+// Re-encode through a canvas: it applies the photo's orientation, drops its metadata (such as
+// where it was taken) before it's synced, and keeps the file small.
+async function preparePicture(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const W = img.naturalWidth, H = img.naturalHeight;
+    if (!W || !H) throw new Error("empty image");
+    const f = Math.min(1, MAX_PICTURE_SIDE / Math.max(W, H));
+    const w = Math.max(1, Math.round(W * f)), h = Math.max(1, Math.round(H * f));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    let mime = blob.type === "image/jpeg" ? "image/jpeg" : "image/png";
+    if (mime === "image/jpeg") { ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h); }
+    ctx.drawImage(img, 0, 0, w, h);
+    let out = await toBlob(canvas, mime, 0.9);
+    // Photos copied as PNG (phones do this) are far smaller as JPEG when nothing is transparent.
+    if (mime === "image/png" && out.size > 1_500_000 && opaque(ctx, w, h)) {
+      out = await toBlob(canvas, "image/jpeg", 0.9);
+      mime = "image/jpeg";
+    }
+    const bytes = new Uint8Array(await out.arrayBuffer());
+    return { src: await sha256Hex(bytes), mime, bytes, width: w, height: h };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+const PICTURE_HINT_KEY = "penmit.pictureHint";
+async function insertPictures(blobs, at = null) {
+  if (!current) return;
+  const id = current.id;
+  const pics = [];
+  for (const blob of blobs) {
+    try { pics.push(await preparePicture(blob)); } catch (e) { console.warn("picture", e); toast(t("pictureFailed"), { error: true }); }
+  }
+  if (!pics.length || current?.id !== id) return;
+  for (const pic of pics) {
+    await db.put("images", { id: pictureKey(id, pic.src), doc: id, src: pic.src, mime: pic.mime, bytes: pic.bytes.buffer });
+  }
+  if (ink.tool !== "lasso") selectTool("lasso");
+  ink.addPictures(pics, at);
+  requestPersistence();
+  let hinted = false;
+  try { hinted = localStorage.getItem(PICTURE_HINT_KEY) === "1"; localStorage.setItem(PICTURE_HINT_KEY, "1"); } catch { /* storage unavailable */ }
+  if (!hinted) toast(t("pictureHint"), { ms: 6000 });
+}
+
+const picturesIn = (data) => {
+  if (!data) return [];
+  const files = [...(data.files || [])].filter((f) => f.type.startsWith("image/"));
+  if (files.length) return files;
+  return [...(data.items || [])].filter((it) => it.kind === "file" && it.type.startsWith("image/")).map((it) => it.getAsFile()).filter(Boolean);
+};
+
+// Ctrl+V / Cmd+V, or "Paste" from the keyboard's menu.
+document.addEventListener("paste", (e) => {
+  if (!current || $("#reader").hidden || anyDialogOpen() || e.target.closest?.("input, textarea, [contenteditable]")) return;
+  const files = picturesIn(e.clipboardData);
+  if (!files.length) return;
+  e.preventDefault();
+  insertPictures(files);
+});
+
+async function pasteFromClipboard() {
+  let items;
+  try {
+    items = await navigator.clipboard.read();
+  } catch {
+    toast(t("pasteBlocked"), { ms: 5000 });
+    return;
+  }
+  const blobs = [];
+  for (const item of items) {
+    const type = item.types.find((ty) => ty.startsWith("image/"));
+    if (type) blobs.push(await item.getType(type));
+  }
+  if (blobs.length) insertPictures(blobs);
+  else toast(t("noPictureToPaste"));
+}
+
+const pictureInput = $("#picture-input");
+pictureInput.addEventListener("change", () => {
+  if (pictureInput.files.length) insertPictures([...pictureInput.files]);
+  pictureInput.value = "";
+});
+$("#add-picture").addEventListener("click", () => {
+  if (!navigator.clipboard?.read) { pictureInput.click(); return; }
+  toggleMenu([
+    { label: t("pastePicture"), action: "paste-picture", run: pasteFromClipboard },
+    { label: t("choosePicture"), action: "choose-picture", run: () => pictureInput.click() },
+  ], $("#add-picture"));
+});
+
+function anyDialogOpen() {
+  return dialog.open || renameDialog.open || gotoDialog.open || paperDialog.open;
+}
+
 // ---------- keyboard ----------
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && openMenuEl) { closeMenu(); return; }
-  if (!current || dialog.open || renameDialog.open || gotoDialog.open || e.target.closest?.("input, textarea")) return;
+  if (!current || anyDialogOpen() || e.target.closest?.("input, textarea")) return;
   const mod = e.ctrlKey || e.metaKey;
   const k = e.key.toLowerCase();
   if (ink.selection) {

@@ -1,7 +1,7 @@
 // GitHub storage: the user's own repository, through the REST API, straight from the device.
 // Each sync is one commit made with the Git Data API (blobs, tree, commit, ref), which handles
 // files up to 100 MB and changes many files atomically. Layout: penmit/<docId>/<file>.
-import { StorageError, FILES, bytesToBase64, base64ToBytes, gitBlobSha } from "./sync.js";
+import { StorageError, bytesToBase64, base64ToBytes, gitBlobSha } from "./sync.js";
 
 const API = "https://api.github.com";
 const ROOT = "penmit";
@@ -62,7 +62,7 @@ export class GitHub {
 
   // An empty repository has no commit to build on; the contents API can make the first one.
   async bootstrap() {
-    const readme = "# Penmit PDF notes\n\nPDFs and handwriting synced by [Penmit PDF](https://github.com/Choo-AI-Dev/penmit-pdf).\nEach folder under `penmit/` is one PDF: `document.pdf`, `meta.json` and `ink.json`.\n";
+    const readme = "# Penmit PDF notes\n\nPDFs and handwriting synced by [Penmit PDF](https://github.com/Choo-AI-Dev/penmit-pdf).\nEach folder under `penmit/` is one PDF: `document.pdf`, `meta.json`, `ink.json` and the pictures placed on its pages (`img-….png`/`.jpg`).\n";
     const body = { message: "Start Penmit PDF notes", content: await bytesToBase64(enc.encode(readme)) };
     try {
       await this.api(`/contents/README.md`, { method: "PUT", body: { ...body, branch: this.branch } });
@@ -118,10 +118,11 @@ export class GitHubBackend {
     this.entries = [];
     const docs = new Map();
     for (const [p, sha] of files) {
-      const m = /^penmit\/([0-9a-f]{64})\/(document\.pdf|meta\.json|ink\.json)$/.exec(p);
+      const m = /^penmit\/([0-9a-f]{64})\/(document\.pdf|meta\.json|ink\.json|img-([0-9a-f]{64})\.(?:png|jpg))$/.exec(p);
       if (!m) continue;
-      if (!docs.has(m[1])) docs.set(m[1], {});
-      docs.get(m[1])[m[2].split(".")[0]] = sha;
+      if (!docs.has(m[1])) docs.set(m[1], { pictures: new Map() });
+      if (m[3]) docs.get(m[1]).pictures.set(m[3], m[2]);
+      else docs.get(m[1])[m[2].split(".")[0]] = sha;
     }
     return { docs };
   }
@@ -135,9 +136,14 @@ export class GitHubBackend {
   }
 
   async remove(id) {
-    for (const name of FILES) {
-      if (this.files.has(path(id, name))) this.entries.push({ path: path(id, name), mode: "100644", type: "blob", sha: null });
+    const prefix = `${ROOT}/${id}/`;
+    for (const p of this.files.keys()) {
+      if (p.startsWith(prefix)) this.entries.push({ path: p, mode: "100644", type: "blob", sha: null });
     }
+  }
+
+  async removeFile(id, name) {
+    if (this.files.has(path(id, name))) this.entries.push({ path: path(id, name), mode: "100644", type: "blob", sha: null });
   }
 
   async finish(message) {
